@@ -68,12 +68,12 @@ impl<'self> BoxGenerator<'self> {
         }
     }
 
-    fn with_clone<R> (&mut self, cb: &fn(BoxGenerator<'self>) -> R) -> R {
-        let gen = BoxGenerator {
+    // FIXME: better name
+    fn clone(&mut self) -> BoxGenerator<'self> {
+        BoxGenerator {
             flow: &mut *self.flow,
             range_stack: self.range_stack
-        };
-        cb(gen)
+        }
     }
 
     /* Whether "spacer" boxes are needed to stand in for this DOM node */
@@ -292,11 +292,7 @@ impl LayoutTreeBuilder {
         let (this_generator, next_generator) = 
             match box_gen_result {
                 NoGenerator => return Normal(prev_sibling_generator),
-                ParentGenerator => {
-                    do parent_generator.with_clone |clone| {
-                        (clone, None)
-                    }
-                }
+                ParentGenerator => (parent_generator.clone(), None),
                 SiblingGenerator => (prev_sibling_generator.take_unwrap(), None),
                 NewGenerator(gen) => (gen, None),
                 ReparentingGenerator(gen) => {
@@ -304,11 +300,7 @@ impl LayoutTreeBuilder {
                     (gen, None)
                 }
                 Mixed(gen, next_gen) => (gen, Some(match *next_gen {
-                    ParentGenerator => {
-                        do parent_generator.with_clone |clone| {
-                            clone
-                        }
-                    }
+                    ParentGenerator => parent_generator.clone(),
                     SiblingGenerator => prev_sibling_generator.take_unwrap(),
                     _ => fail!("Unexpect BoxGenResult")
                 }))
@@ -325,28 +317,23 @@ impl LayoutTreeBuilder {
         // recurse on child nodes.
         let prev_gen_cell = Cell::new(Normal(None));
         for child_node in cur_node.children() {
-            do parent_generator.with_clone |grandparent_clone| {
-                let grandparent_clone_cell = Cell::new(Some(grandparent_clone));
-                do this_generator.with_clone |parent_clone| {
-                    match prev_gen_cell.take() {
-                        Normal(prev_gen) => {
-                            let prev_generator = self.construct_recursively(layout_ctx,
-                                                                            child_node,
-                                                                            grandparent_clone_cell.take(),
-                                                                            parent_clone,
-                                                                            prev_gen);
-                            prev_gen_cell.put_back(prev_generator);
-                        }
-                        Reparent(prev_gen) => {
-                            let prev_generator = self.construct_recursively(layout_ctx,
-                                                                            child_node,
-                                                                            None,
-                                                                            grandparent_clone_cell.take().unwrap(),
-                                                                            Some(prev_gen));
-                            prev_gen_cell.put_back(prev_generator);
-                        } 
-                    }
+            match prev_gen_cell.take() {
+                Normal(prev_gen) => {
+                    let prev_generator = self.construct_recursively(layout_ctx,
+                                                                    child_node,
+                                                                    Some(parent_generator.clone()),
+                                                                    this_generator.clone(),
+                                                                    prev_gen);
+                    prev_gen_cell.put_back(prev_generator);
                 }
+                Reparent(prev_gen) => {
+                    let prev_generator = self.construct_recursively(layout_ctx,
+                                                                    child_node,
+                                                                    None,
+                                                                    parent_generator.clone(),
+                                                                    Some(prev_gen));
+                    prev_gen_cell.put_back(prev_generator);
+                } 
             }
         }
 
