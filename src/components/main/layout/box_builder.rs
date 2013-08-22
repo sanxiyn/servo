@@ -240,13 +240,11 @@ impl<'self> BoxGenerator<'self> {
 
 enum BoxGenResult<'self> {
     NoGenerator,
-    ParentGenerator,
-    SiblingGenerator,
     NewGenerator(BoxGenerator<'self>),
     /// Start a new generator, but also switch the parent out for the
     /// grandparent, ending the parent generator.
     ReparentingGenerator(BoxGenerator<'self>),
-    Mixed(BoxGenerator<'self>, ~BoxGenResult<'self>),
+    WithNext(BoxGenerator<'self>, BoxGenerator<'self>),
 }
 
 /// Determines whether the result of child box construction needs to reparent
@@ -292,18 +290,12 @@ impl LayoutTreeBuilder {
         let (this_generator, next_generator) = 
             match box_gen_result {
                 NoGenerator => return Normal(prev_sibling_generator),
-                ParentGenerator => (parent_generator.clone(), None),
-                SiblingGenerator => (prev_sibling_generator.take_unwrap(), None),
                 NewGenerator(gen) => (gen, None),
                 ReparentingGenerator(gen) => {
                     reparent = true;
                     (gen, None)
                 }
-                Mixed(gen, next_gen) => (gen, Some(match *next_gen {
-                    ParentGenerator => parent_generator.clone(),
-                    SiblingGenerator => prev_sibling_generator.take_unwrap(),
-                    _ => fail!("Unexpect BoxGenResult")
-                }))
+                WithNext(gen, next_gen) => (gen, Some(next_gen)),
             };
 
 
@@ -414,10 +406,11 @@ impl LayoutTreeBuilder {
             // then continue building from the inline flow in case there are more inlines
             // afterward.
             (CSSDisplayBlock, _, Some(&InlineFlow(_))) if !is_float.is_none() => {
+                let sibling_generator = sibling_generator.unwrap();
                 let float_generator = self.create_child_generator(node, 
-                                                                  sibling_generator.unwrap(), 
+                                                                  sibling_generator, 
                                                                   Flow_Float(is_float.unwrap()));
-                return Mixed(float_generator, ~SiblingGenerator);
+                return WithNext(float_generator, sibling_generator.clone());
             }
             // This is a catch-all case for when:
             // a) sibling_flow is None
@@ -430,7 +423,7 @@ impl LayoutTreeBuilder {
                 // If this is the root node, then use the root flow's
                 // context. Otherwise, make a child block context.
                 (true, true) => self.create_child_generator(node, parent_generator, Flow_Block),
-                (true, false) => { return ParentGenerator }
+                (true, false) => parent_generator.clone(),
                 (false, _)   => {
                     self.create_child_generator(node, parent_generator, Flow_Block)
                 }
@@ -441,8 +434,8 @@ impl LayoutTreeBuilder {
             }
 
             // Inlines that are children of inlines are part of the same flow
-            (CSSDisplayInline, & &InlineFlow(*), _) => return ParentGenerator,
-            (CSSDisplayInlineBlock, & &InlineFlow(*), _) => return ParentGenerator,
+            (CSSDisplayInline, & &InlineFlow(*), _) => parent_generator.clone(),
+            (CSSDisplayInlineBlock, & &InlineFlow(*), _) => parent_generator.clone(),
 
             // Inlines that are children of blocks create new flows if their
             // previous sibling was a block.
@@ -464,11 +457,9 @@ impl LayoutTreeBuilder {
             // sibling's flow context.
             (CSSDisplayInline, & &BlockFlow(*), _) |
             (CSSDisplayInlineBlock, & &BlockFlow(*), _) => {
-                return match sibling_generator {
-                    None => NewGenerator(self.create_child_generator(node, 
-                                                                     parent_generator, 
-                                                                     Flow_Inline)),
-                    Some(*) => SiblingGenerator
+                match sibling_generator {
+                    Some(gen) => gen.clone(),
+                    None => self.create_child_generator(node, parent_generator, Flow_Inline)
                 }
             }
 
@@ -486,7 +477,7 @@ impl LayoutTreeBuilder {
                 }
             }
 
-            _ => return ParentGenerator
+            _ => parent_generator.clone()
         };
 
         NewGenerator(new_generator)
